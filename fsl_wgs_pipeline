@@ -1,0 +1,336 @@
+#!/usr/bin/env python2
+
+import sys, os, glob, argparse, datetime, logging
+from Bio import SeqIO
+from sequence import SequenceData
+from fastqc import FastQC
+from multiqc import MultiQC
+from trim import Trimmer
+from assemble import Assembler
+from quast_qc import Quast
+from average_coverage import AverageCoverage
+from aggregate_data import FinalSummary
+
+def run_pipeline(args):
+	
+	reads = []
+	infile = open(args.input[0], "r")
+	for line in infile:
+		if len(line.strip()) > 0:
+			reads.append(line.strip())
+	infile.close()
+
+	output = args.output[0]
+
+	if not os.path.isdir(output):
+		os.mkdir(output)
+	
+	if not output.endswith("/"):
+		output = output.strip() + "/"
+	
+	os.mkdir(output + "fsl_wgs_pipeline_final_results/")
+	final_results_directory = output + "fsl_wgs_pipeline_final_results/"
+
+	logging.basicConfig(level = logging.DEBUG, filename = final_results_directory + "fsl_wgs_pipeline.log", filemode = "a+", format = "%(message)s")
+	logging.getLogger().addHandler(logging.StreamHandler())
+	
+
+	threads = str(args.threads)
+	fastqc_path = args.fastqc_path
+	#raw_fastqc = args.raw_fastqc
+	multiqc = args.multiqc
+	multiqc_path = args.multiqc_path
+	trimmer = args.trimmer
+	trimmomatic_jar = args.trimmomatic_jar
+	trimmomatic_adapters = args.trimmomatic_adapters
+	trimmomatic_phred = args.trimmomatic_phred
+	trimmomatic_illuminaclip = args.trimmomatic_illuminaclip
+	trimmomatic_leading = args.trimmomatic_leading
+	trimmomatic_trailing = args.trimmomatic_trailing
+	trimmomatic_slidingwindow = args.trimmomatic_slidingwindow
+	trimmomatic_minlen = args.trimmomatic_minlen
+	trimmed_fastqc = args.trimmed_fastqc
+	spades_path = args.spades_path
+	spades_m = args.spades_m
+	assembler = args.assembler
+	min_contig_length = args.min_contig_length
+	quast = args.quast
+	quast_path = args.quast_path
+	quast_min_contig = args.quast_min_contig
+	coverage = args.coverage
+	bwa_path = args.bwa_path
+	samtools_path = args.samtools_path
+	
+	now = datetime.datetime.now()
+	logging.info("Welcome to the fsl_wgs_pipeline!")
+	logging.info("You are initializing this run at " + now.strftime("%Y-%m-%d %H:%M"))
+	logging.info("You ran the following command: ")
+	logging.info(" ".join([str(sa) for sa in sys.argv]))
+	logging.info("Report bugs/concerns to Laura M. Carroll, lmc297@cornell.edu\n")
+
+	
+	for r in reads:
+
+		isolate = r.split("\t")
+
+		load_sequence = SequenceData(
+			infile = args.input[0],
+			isolate = isolate)
+
+		fastq, isolate_name = load_sequence.load_fastq(infile, isolate)
+	
+		now = datetime.datetime.now() 	
+		logging.info("Beginning fsl_wgs_pipeline analysis of " + isolate_name + " at " + now.strftime("%Y-%m-%d %H:%M"))
+		
+		#if raw_fastqc == "True":
+			#run_raw_fastqc = FastQC(
+			#	fastqc_path = fastqc_path,
+			#	fastq = fastq,
+			#	final_results_directory = final_results_directory,
+			#	threads = threads,
+			#	suffix = "raw")
+
+			#logging.info("Using fastqc to assess quality of raw reads for " + isolate_name + " at " + now.strftime("%Y-%m-%d %H:%M"))
+
+			#run_raw_fastqc.run_fastqc(fastqc_path, fastq, final_results_directory, threads, "raw")
+
+
+			#logging.info("Finished fastqc quality assessment of raw reads for " + isolate_name + " at " + now.strftime("%Y-%m-%d %H:%M"))
+		if trimmer != "False":
+
+			if trimmer == "trimmomatic":
+
+				run_trimmomatic = Trimmer(
+					final_results_directory = final_results_directory,
+					isolate_name = isolate_name,
+					fastq = fastq,
+					trimmomatic_jar = trimmomatic_jar,
+					threads = threads,
+					trimmomatic_adapters = trimmomatic_adapters,
+					trimmomatic_phred = trimmomatic_phred,
+					trimmomatic_illuminaclip = trimmomatic_illuminaclip,	
+					trimmomatic_leading = trimmomatic_leading,
+					trimmomatic_trailing = trimmomatic_trailing,
+					trimmomatic_slidingwindow = trimmomatic_slidingwindow,
+					trimmomatic_minlen = trimmomatic_minlen)
+
+				logging.info("Beginning trimming of " + isolate_name + " using trimmomatic at " + now.strftime("%Y-%m-%d %H:%M"))
+
+				if len(fastq) == 1:
+					
+					fastq = run_trimmomatic.trimmomatic_se(final_results_directory, isolate_name, fastq, trimmomatic_jar, threads, trimmomatic_adapters, trimmomatic_phred, trimmomatic_illuminaclip, trimmomatic_slidingwindow, trimmomatic_leading, trimmomatic_trailing, trimmomatic_minlen)
+
+
+				elif len(fastq) == 2:
+
+					fastq = run_trimmomatic.trimmomatic_pe(final_results_directory, isolate_name, fastq, trimmomatic_jar, threads, trimmomatic_adapters, trimmomatic_phred, trimmomatic_illuminaclip, trimmomatic_slidingwindow, trimmomatic_leading, trimmomatic_trailing, trimmomatic_minlen)
+			
+			logging.info("Finished trimming " + isolate_name + " at " + now.strftime("%Y-%m-%d %H:%M"))
+
+			if trimmed_fastqc == "True":
+
+				run_trimmed_fastqc = FastQC(
+					fastqc_path = fastqc_path,
+					fastq = fastq,
+					final_results_directory = final_results_directory,
+					threads = threads,
+					suffix = "trimmed")
+
+				logging.info("Using fastqc to assess the quality of trimmed reads for " + isolate_name + " (" + ",".join(fastq) + ") at " + now.strftime("%Y-%m-%d %H:%M"))
+
+				run_trimmed_fastqc.run_fastqc(fastqc_path, fastq, final_results_directory, threads, "trimmed")
+
+				logging.info("Finished fastqc quality assessment of trimmed reads at " + now.strftime("%Y-%m-%d %H:%M"))
+
+		if assembler != "False":
+
+			if assembler == "spades":
+
+				run_spades = Assembler(
+					final_results_directory = final_results_directory,
+					isolate_name = isolate_name,
+					spades_path = spades_path,
+					fastq = fastq,
+					threads = threads,
+					spades_m = spades_m)
+
+				logging.info("Beginning assembly of " + isolate_name + " using " + ",".join(fastq) + " as input at " + now.strftime("%Y-%m-%d %H:%M"))
+				
+				if len(fastq) == 1:
+
+					contigs = run_spades.spades_se(final_results_directory, isolate_name, spades_path, fastq, threads, spades_m)
+
+				elif len(fastq) == 2:
+
+					contigs = run_spades.spades_pe(final_results_directory, isolate_name, spades_path, fastq, threads, spades_m)
+
+				logging.info("Finished assembling " + isolate_name + " at " + now.strftime("%Y-%m-%d %H:%M"))
+
+			if min_contig_length > 1:
+				
+				final_seqs = []
+
+				os.rename(contigs, contigs.replace(".fasta", "_og.fna"))
+				og_contigs = open(contigs.replace(".fasta", "_og.fna"), "r")	
+
+				for record in SeqIO.parse(og_contigs, "fasta"):
+					seqlen = len(record.seq)	
+					if seqlen >= min_contig_length:
+						final_seqs.append(record)
+				
+				og_contigs.close()
+				SeqIO.write(final_seqs, contigs, "fasta")
+
+				os.remove(contigs.replace(".fasta", "_og.fna"))
+						
+					
+
+			if quast == "True":
+
+				run_quast = Quast(
+					final_results_directory = final_results_directory,
+					isolate_name = isolate_name,
+					quast_path = quast_path,
+					quast_min_contig = quast_min_contig,
+					threads = threads,
+					fastq = fastq,
+					contigs = contigs)
+
+				logging.info("Beginning quast quality assessment of " + contigs + " at " + now.strftime("%Y-%m-%d %H:%M"))
+
+				quast_results = run_quast.run_quast(final_results_directory, isolate_name, quast_path, quast_min_contig, threads, fastq, contigs)
+
+				logging.info("Finished quast quality assessment of " + contigs + " at " + now.strftime("%Y-%m-%d %H:%M"))
+
+			if coverage == "True":
+
+				map_coverage = AverageCoverage(
+					final_results_directory = final_results_directory,
+					isolate_name = isolate_name,
+					bwa_path = bwa_path,
+					samtools_path = samtools_path,
+					threads = threads,
+					fastq = fastq,
+					contigs = contigs)
+
+				logging.info("Beginning mapping to determine average per-base assembly coverage of " + contigs + " with " + ",".join(fastq) + " treated as reads at " + now.strftime("%Y-%m-%d %H:%M"))
+
+				map_coverage.bwa_coverage(final_results_directory, isolate_name, bwa_path, samtools_path, threads, fastq, contigs)
+
+				logging.info("Finished calculating average per-base assembly coverage for " + isolate_name + " at " + now.strftime("%Y-%m-%d %H:%M"))
+
+				logging.info("")
+
+		
+		final_summary = FinalSummary(
+			final_results_directory = final_results_directory,
+			isolate_name = isolate_name,
+			fastq = fastq,
+			assembler = assembler,
+			quast = quast,
+			coverage = coverage)
+
+		logging.info("Creating final results summary at " + now.strftime("%Y-%m-%d %H:%M"))
+		final_summary.aggregate_data(final_results_directory, isolate_name, fastq, assembler, quast, coverage)
+		logging.info("Finished creating final summary at " + now.strftime("%Y-%m-%d %H:%M"))
+		logging.info("")
+					
+	if multiqc == "True":	
+
+		run_multiqc_final = MultiQC(
+			multiqc_path = multiqc_path,
+			directory = final_results_directory)
+
+		logging.info("")
+		logging.info("Running multiqc in final results directory at " + now.strftime("%Y-%m-%d %H:%M"))
+
+		#if raw_fastqc == "True":
+
+			#run_multiqc_final.run_multiqc_ignore(multiqc_path, final_results_directory)
+
+		#else:
+
+		run_multiqc_final.run_multiqc(multiqc_path, final_results_directory)
+
+		logging.info("Finished final multiqc aggregation at " + now.strftime("%Y-%m-%d %H:%M"))
+		logging.info("")
+
+
+	logging.info("")
+	logging.info("")
+	logging.info("")
+	logging.info("fsl_wgs_pipeline finished at " + now.strftime("%Y-%m-%d %H:%M"))
+	logging.info("Report bugs/concerns to Laura M. Carroll, lmc297@cornell.edu\n")
+	logging.info("Have a nice day!")
+
+	
+			
+def main():
+
+	parser = argparse.ArgumentParser(usage = "fsl_wgs_pipeline -i </path/to/list/of/isolate/file/paths.txt> -o </path/to/output/directory/> [-other options]")
+
+	parser.add_argument("-i", "--input", help = "Path to tab-separated list of isolate file paths and names, one isolate per line; paired-end reads should have the path to forward reads, path to reverse reads, and the desired isolate name, each separated by a tab, while single-end reads should have the path to the reads and the desired isolate name, separated by a tab", nargs = 1, required = True)
+
+	parser.add_argument("-o", "--output", help = "Path to desired output directory", nargs = 1, required = True)
+
+	parser.add_argument("--threads", help = "Optional argument; integer; number of threads; default = 1", nargs = "?", default = 1)
+
+	
+	parser.add_argument("--fastqc_path", help = "Optional argument for use with --trimmed_fastqc True; fastqc, unless path to fastqc is supplied; path to fastqc; default = fastqc (fastqc is in your path)", nargs = "?", default = "fastqc")
+
+	#parser.add_argument("--fastqc_path", help = "Optional argument for use with --raw_fastqc True and/or --trimmed_fastqc True; fastqc, unless path to fastqc is supplied; path to fastqc; default = fastqc (fastqc is in your path)", nargs = "?", default = "fastqc")
+
+	#parser.add_argument("--raw_fastqc", help = "Optional argument; True or False; run fastqc on raw Illumina reads; default = False", nargs = "?", default = "False")
+
+	parser.add_argument("--multiqc", help = "Optional argument; True or False; run multiqc on reads and/or assemblies; default = True", nargs = "?", default = "True")
+
+	parser.add_argument("--multiqc_path", help = "Optional argument; multiqc or path to multiqc; path to multiqc; default = multiqc (multiqc is in the user's path", nargs = "?", default = "multiqc")
+
+	parser.add_argument("--trimmer", help = "Optional argument; trimmomatic or False; trim reads using trimmomatic or skip read trimming (--trimmer False); default = trimmomatic", nargs = "?", default = "trimmomatic")
+	
+	parser.add_argument("--trimmomatic_jar", help = "Argument for use with --trimmer trimmomatic; trimmomatic-0.39.jar, unless path to trimmomatic jar file is supplied; path to trimmomatic jar file (named trimmomatic-version.jar); default = trimmomatic-0.39.jar (jar for trimmomatic version 0.39 is in your path)", nargs = "?", default = "trimmomatic-0.39.jar")
+
+	parser.add_argument("--trimmomatic_adapters", help = "Argument for use with --trimmer trimmomatic; False, unless path to trimmomatic adapter sequences is supplied; path to trimmomatic adapter sequences; default = False (no path supplied)", nargs = "?", default = "False")
+
+	parser.add_argument("--trimmomatic_phred", help = "Optional argument for use with --trimmer trimmomatic; phred33 or phred64; specify phred quality encoding of fastq files to be trimmed (note that this should not be changed unless working with very, very old Illumina data); default = phred33", nargs = "?", default = "phred33")
+
+	parser.add_argument("--trimmomatic_illuminaclip", help = "Optional argument for use with --trimmer trimmomatic; integer:integer:integer; ILLUMINACLIP seed mismatches (specifies the maximum mismatch count which will still allow a full match to be performed), palindrome clip threshold (specifies how accurate the match between the two 'adapter ligated' reads must be for PE palindrome read alignment), and simple clip threshold (specifies how accurate the match between any adapter etc. sequence must be against a read), each separated by a colon (<seed mismatches>:<palindrome clip threshold>:<simple clip threshold>); default = 2:30:10", nargs = "?", default = "2:30:10")
+
+	parser.add_argument("--trimmomatic_leading", help = "Optional argument for use with --trimmer trimmomatic; integer; argument to pass to trimmomatic's LEADING argument (cut bases off the start of a read, if below a threshold quality); default = 3", nargs = "?", default = 3)
+
+	parser.add_argument("--trimmomatic_trailing", help = "Optional argument for use with --trimmer trimmomatic; integer; argument to pass to trimmomatic's TRAILING argument (cut bases off the end of a read, if below a threshold quality); default = 3", nargs = "?", default = 3)
+
+	parser.add_argument("--trimmomatic_slidingwindow", help = "Optional argument for use with --trimmer trimmomatic; integer:integer; SLIDINGWINDOW window size (specifies the number of bases to average across) and required quality (specifies the average quality required), separated by a colon (<window size>:<required quality>); default = 4:15", nargs = "?", default = "4:15")
+
+	parser.add_argument("--trimmomatic_minlen", help = "Optional argument for use with --trimmer trimmomatic; integer; argument to pass to trimmomatic's MINLEN argument (drop the read if it is below a specified length); default = 36", nargs = "?", default = 36)
+
+	parser.add_argument("--trimmed_fastqc", help = "Optional argument for use with --trimmer trimmomatic; True or False; run fastqc on trimmed Illumina reads; default = True", nargs = "?", default = "True")
+
+	parser.add_argument("--assembler", help = "Optional argument; spades or False; assemble genome with spades or skip assembly (--assembler False); default = spades", nargs = "?", default = "spades")
+
+	parser.add_argument("--spades_path", help = "Argument for use with --assembler spades; spades.py, unless path to spades.py is supplied; path to spades.py; default = spades.py (spades.py is in the user's path)", nargs = "?", default = "spades.py")
+
+	parser.add_argument("--spades_m", help = "Optional argument for use with --assembler spades; integer; memory limit for spades in Gb (spades terminates if it reaches this limit); default = 20", nargs = "?", default = 20)
+
+	parser.add_argument("--min_contig_length", help = "Optional argument for use with --assembler spades; integer; remove contigs less than specified length (in bp) from each assembly (note that this only applies to 'final' assemblies copied into the 'contigs' directory in the 'fsl_wgs_pipeline_final_results' directory; all original, unfiltered assemblies are unchanged and remain in the isolate's respective directory in the 'spades_output' directory in the 'fsl_wgs_pipeline_final_results' directory; default = 200", nargs = "?", default = 200) 
+
+	parser.add_argument("--quast", help = "Optional argument for use with --assembler spades; True or False; run quast on assembled genomes; default = True", nargs = "?", default = "True")
+
+	parser.add_argument("--quast_path", help = "Argument for use with --quast True; quast.py, unless path to quast.py is supplied; path to quast.py; default = quast.py (quast.py is in the user's path)", nargs = "?", default = "quast.py")
+
+	parser.add_argument("--quast_min_contig", help = "Optional argument for use with --quast True; integer; --min-contig threshold for quast contig length to consider (in bp; shorter contigs won't be taken into account, except for specific metrics); default = 1 (quast considers all contigs)", nargs = "?", default = 1)
+
+	parser.add_argument("--coverage", help = "Optional argument for use with --assembler spades; True or False; calculate coverage of assembly by mapping reads back to assembly using bwa/samtools; default = True", nargs = "?", default = "True")
+
+	parser.add_argument("--bwa_path", help = "Argument for use with --coverage True; bwa, unless path to bwa is supplied; path to bwa; default = bwa (bwa is in the user's path)", nargs = "?", default = "bwa")
+
+	parser.add_argument("--samtools_path", help = "Argument for use with --coverage True; samtools, unless path to samtools is supplied; path to samtools; default = samtools (samtools is in the user's path)", nargs = "?", default = "samtools")
+
+	parser.add_argument('--version', action="version", version='%(prog)s 1.0.0', help="Print version")
+
+	args = parser.parse_args()
+
+	run_pipeline(args)
+
+if __name__ == "__main__":
+	main()
